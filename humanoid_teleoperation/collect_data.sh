@@ -1,3 +1,4 @@
 cd scripts
 
-python collect_data.py
+# ARX + Joycon data collection
+python collect_data_arx.py
