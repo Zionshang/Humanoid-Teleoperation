@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 from termcolor import cprint
 import threading
+import h5py
 
 # Camera pipeline (reuse original logic)
 from multi_realsense import MultiRealSense
@@ -131,110 +132,100 @@ class ArxDataCollector:
         os.makedirs(self.demo_dir, exist_ok=True)
         record_file_name = os.path.join(self.demo_dir, f"{self.demo_name}.h5")
 
-        try:
-            # Warmup
-            time.sleep(1.0)
-            cprint("Waiting for X to start recording...", "cyan")
-            while True:
-                _ = self.camera_context()
-                x_state = self.joycon.listen_button('x')
-                if x_state == 1:
-                    cprint("[Joycon] X pressed -> enter teleop loop.", "green")
-                    break
-                await asyncio.sleep(1.0 / self.fps)
+        
+        # Warmup
+        time.sleep(1.0)
+        cprint("Waiting for X to start recording...", "cyan")
+        while True:
+            _ = self.camera_context()
+            x_state = self.joycon.listen_button('x', show_all=True)
+            if x_state == 1:
+                cprint("[Joycon] X pressed -> enter teleop loop.", "green")
+                break
+            await asyncio.sleep(1.0 / self.fps)
 
-            cprint("Start teleop loop", "green")
-            for i in range(self.length):
-                start = time.time()
+        cprint("Start teleop loop", "green")
+        for i in range(self.length):
+            start = time.time()
 
-                cam_dict = self.camera_context()
-                joy_pose, gripper, _ = self.joycon.get_control()
+            cam_dict = self.camera_context()
+            joy_pose, gripper, _ = self.joycon.get_control()
 
-                # Send EEF command
-                eef_cmd = self._arx.EEFState()
-                eef_cmd.pose_6d()[:] = np.asarray(joy_pose[:6], dtype=np.float64)
-                eef_cmd.gripper_pos = float(gripper)
-                eef_cmd.timestamp = self.controller.get_timestamp()
-                self.controller.set_eef_cmd(eef_cmd)
+            # # Send EEF command
+            # eef_cmd = self._arx.EEFState()
+            # eef_cmd.pose_6d()[:] = np.asarray(joy_pose[:6], dtype=np.float64)
+            # eef_cmd.gripper_pos = float(gripper)
+            # eef_cmd.timestamp = self.controller.get_timestamp()
+            # self.controller.set_eef_cmd(eef_cmd)
 
-                # Resize and buffer camera data
-                color_resized = None
-                depth_resized = None
-                if self.save_img and "color" in cam_dict and cam_dict["color"] is not None:
-                    color_resized = cv2.resize(cam_dict["color"], (self.resize_hw, self.resize_hw), interpolation=cv2.INTER_LINEAR)
-                if self.save_depth and "depth" in cam_dict and cam_dict["depth"] is not None:
-                    depth_resized = cv2.resize(cam_dict["depth"], (self.resize_hw, self.resize_hw), interpolation=cv2.INTER_LINEAR)
-                await self.write_data(color_resized, depth_resized, cam_dict.get("point_cloud"))
+            # Resize and buffer camera data
+            color_resized = None
+            depth_resized = None
+            if self.save_img and "color" in cam_dict and cam_dict["color"] is not None:
+                color_resized = cv2.resize(cam_dict["color"], (self.resize_hw, self.resize_hw), interpolation=cv2.INTER_LINEAR)
+            if self.save_depth and "depth" in cam_dict and cam_dict["depth"] is not None:
+                depth_resized = cv2.resize(cam_dict["depth"], (self.resize_hw, self.resize_hw), interpolation=cv2.INTER_LINEAR)
+            await self.write_data(color_resized, depth_resized, cam_dict.get("point_cloud"))
 
-                # Record joint state and current cmd
-                joint_state = self.controller.get_joint_state()
-                joint_cmd = self.controller.get_joint_cmd()
-                pos_state = np.copy(joint_state.pos())
-                pos_cmd = np.copy(joint_cmd.pos())
-                env_qpos = np.concatenate([pos_state, np.array([float(joint_state.gripper_pos)], dtype=np.float64)])
-                action = np.concatenate([pos_cmd, np.array([float(joint_cmd.gripper_pos)], dtype=np.float64)])
-                self.env_qpos_array.append(env_qpos)
-                self.action_array.append(action)
+            # Record joint state and current cmd
+            joint_state = self.controller.get_joint_state()
+            joint_cmd = self.controller.get_joint_cmd()
+            pos_state = np.copy(joint_state.pos())
+            pos_cmd = np.copy(joint_cmd.pos())
+            env_qpos = np.concatenate([pos_state, np.array([float(joint_state.gripper_pos)], dtype=np.float64)])
+            action = np.concatenate([pos_cmd, np.array([float(joint_cmd.gripper_pos)], dtype=np.float64)])
+            self.env_qpos_array.append(env_qpos)
+            self.action_array.append(action)
 
-                # Stop on B
-                b_state = self.joycon.listen_button('b')
-                if b_state == 1:
-                    cprint("[Joycon] B pressed -> stop recording & exit teleop.", "yellow")
-                    break
+            # Stop on B
+            b_state = self.joycon.listen_button('b')
+            if b_state == 1:
+                cprint("[Joycon] B pressed -> stop recording & exit teleop.", "yellow")
+                break
 
-                duration = time.time() - start
-                measured_duration.next(duration)
-                fps_now = 1.0 / max(1e-6, duration)
-                text = f"time (ms): {measured_duration.get() * 1000.0: >#8.3f} | step: {i} / {self.length} | fps: {fps_now:.3f}"
-                print(text, end="\r")
-                await asyncio.sleep(1.0 / self.fps)
+            duration = time.time() - start
+            measured_duration.next(duration)
+            fps_now = 1.0 / max(1e-6, duration)
+            text = f"time (ms): {measured_duration.get() * 1000.0: >#8.3f} | step: {i} / {self.length} | fps: {fps_now:.3f}"
+            print(text, end="\r")
+            await asyncio.sleep(1.0 / self.fps)
 
-        finally:
-            # Cleanup and save
-            self.camera_context.finalize()
-            try:
-                self.joycon.disconnect()
-            except Exception:
-                pass
-            try:
-                self.controller.reset_to_home()
-                self.controller.set_to_damping()
-            except Exception:
-                pass
+    
+        # Cleanup and save
+        self.camera_context.finalize()
+        self.joycon.disconnect()
+        self.controller.reset_to_home()
+        self.controller.set_to_damping()
 
-            # Save H5
-            discard_end_length = 0
+        # Save H5
+        discard_end_length = 5
+
+        with h5py.File(record_file_name, "w") as f:
             seq_length = len(self.action_array)
-            color_np = np.array(self.color_array[:seq_length]) if self.save_img else None
-            depth_np = np.array(self.depth_array[:seq_length]) if self.save_depth else None
-            cloud_np = np.array(self.cloud_array[:seq_length]) if len(self.cloud_array) > 0 else None
-            env_qpos_np = np.array(self.env_qpos_array[:seq_length])
-            action_np = np.array(self.action_array[:seq_length])
+            color_array = np.array(self.color_array)[:seq_length]
+            depth_array = np.array(self.depth_array)[:seq_length]
+            cloud_array = np.array(self.cloud_array)[:seq_length]
+            env_qpos_array = np.array(self.env_qpos_array)[:seq_length]
+            action_array = np.array(self.action_array)
+                
+            f.create_dataset("color", data=color_array[:-discard_end_length])
+            f.create_dataset("depth", data=depth_array[:-discard_end_length])
+            f.create_dataset("cloud", data=cloud_array[:-discard_end_length])
+            f.create_dataset("env_qpos_proprioception", data=env_qpos_array[:-discard_end_length])
+            f.create_dataset("action", data=action_array[:-discard_end_length])
 
-            try:
-                import h5py  # type: ignore
-            except ImportError:
-                raise RuntimeError("h5py is required to save the dataset. Please install it (e.g., pip install h5py).")
+        cprint(f"color shape: {color_array.shape}", "yellow")
+        cprint(f"depth shape: {depth_array.shape}", "yellow")
+        cprint(f"cloud shape: {cloud_array.shape}", "yellow")
+        cprint(f"action shape: {action_array.shape}", "yellow")
+        cprint(f"env_qpos shape: {env_qpos_array.shape}", "yellow")
+        cprint(f"save data at step: {seq_length} in {record_file_name}", "yellow")
 
-            with h5py.File(record_file_name, "w") as f:
-                if color_np is not None:
-                    f.create_dataset("color", data=color_np[:-discard_end_length])
-                if depth_np is not None:
-                    f.create_dataset("depth", data=depth_np[:-discard_end_length])
-                if cloud_np is not None:
-                    f.create_dataset("cloud", data=cloud_np[:-discard_end_length])
-                f.create_dataset("env_qpos_proprioception", data=env_qpos_np[:-discard_end_length])
-                f.create_dataset("action", data=action_np[:-discard_end_length])
-
-            if color_np is not None:
-                cprint(f"color shape: {color_np.shape}", "yellow")
-            if depth_np is not None:
-                cprint(f"depth shape: {depth_np.shape}", "yellow")
-            if cloud_np is not None:
-                cprint(f"cloud shape: {cloud_np.shape}", "yellow")
-            cprint(f"action shape: {action_np.shape}", "yellow")
-            cprint(f"env_qpos shape: {env_qpos_np.shape}", "yellow")
-            cprint(f"save data at step: {seq_length} in {record_file_name}", "yellow")
+        choice = input("whether to rename: y/n")
+        if choice == "y":
+            renamed = input("file rename:")
+            os.rename(src=record_file_name, dst=record_file_name.replace("demo.h5", renamed+'.h5'))
+        cprint("Program finished.", "green")
 
 
 def build_argparser():

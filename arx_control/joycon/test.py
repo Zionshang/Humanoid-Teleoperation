@@ -25,7 +25,12 @@ while True:  # continuously get data until user interrupts
     if control_button == 10:
         break
     viz.update(pose)
-    print(f"{gripper=}")
+    joyconrobotics_right.listen_button('r', show_all=True)
+    joyconrobotics_right.listen_button('zr', show_all=True)
+    joyconrobotics_right.listen_button('y', show_all=True)
+    joyconrobotics_right.listen_button('x', show_all=True)
+    joyconrobotics_right.listen_button('a', show_all=True)
+    joyconrobotics_right.listen_button('b', show_all=True)
     time.sleep(0.01)
 
 viz.close()

@@ -5,8 +5,8 @@ save_img=1
 save_depth=0
 
 
-demo_path=/home/ze/projects/Humanoid-Teleoperation/humanoid_teleoperation/scripts/demo_dir/raw_data_example
-save_path=/home/ze/projects/Humanoid-Teleoperation/humanoid_teleoperation/scripts/demo_dir/training_data_example
+demo_path=/home/jing/Humanoid-Teleoperation/humanoid_teleoperation/scripts/demo_dir/raw_data_example
+save_path=/home/jing/Humanoid-Teleoperation/humanoid_teleoperation/scripts/demo_dir/training_data_example
 
 cd scripts
 python convert_demos.py --demo_dir ${demo_path} \

@@ -8,7 +8,6 @@ from multiprocessing import Process, Pipe, Queue, Event
 import time
 import multiprocessing
 multiprocessing.set_start_method('fork')
-from visualizer import visualize_pointcloud, close_visualizer
 
 np.printoptions(3, suppress=True)
 
@@ -438,6 +437,7 @@ class MultiRealSense(object):
         
 
 if __name__ == "__main__":
+    from visualizer import visualize_pointcloud, close_visualizer
     cam = MultiRealSense(use_right_cam=False, front_num_points=20000,
                          use_grid_sampling=True, use_crop=False, img_size=1024)
     try:
