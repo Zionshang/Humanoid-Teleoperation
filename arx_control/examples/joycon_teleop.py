@@ -110,9 +110,9 @@ def main(model: str, interface: str):
 
     np.set_printoptions(precision=4, suppress=True)
     start_joycon_teleop(controller, joycon)
+    joycon.disconnect()
     controller.reset_to_home()  
     controller.set_to_damping()    
-    joycon.disconnect()
 
 
 if __name__ == "__main__":

@@ -437,28 +437,23 @@ class MultiRealSense(object):
         
 
 if __name__ == "__main__":
-    from visualizer import visualize_pointcloud, close_visualizer
-    cam = MultiRealSense(use_right_cam=False, front_num_points=20000,
-                         use_grid_sampling=True, use_crop=False, img_size=1024)
-    try:
-        while True:
-            out = cam()
-            print(out.keys())
+    cam = MultiRealSense(use_right_cam=False, front_num_points=20000, 
+                         use_grid_sampling=True, use_crop=False, img_size=1024,
+                         front_z_far=0.5, front_z_near=0.01)
+    import matplotlib.pyplot as plt
+    out = cam()
+    print(out.keys())
 
-            # imageio.imwrite('color_front.png', out['color'])
-            # print("save to color_front.png")
-            # # imageio.imwrite('color_right.png', out['right_color'])
-            # # imageio.imwrite('depth_right.png', out['right_depth'])
-            # # imageio.imwrite('depth_front.png', out['right_front'])
-            # # save depth as 8-bit visualization (0~1m -> 0~255)
-            # depth_vis = (np.clip(out['depth'], 0.0, 1.0) * 255.0).astype(np.uint8)
-            # imageio.imwrite('depth_front.png', depth_vis)
-            # print("save to depth_front.png")
+    # imageio.imwrite(f'color_front.png', out['color'])
+    # print("save to color_front.png")
+    # # imageio.imwrite(f'color_right.png', out['right_color'])
+    # # imageio.imwrite(f'depth_right.png', out['right_depth'])
+    # # imageio.imwrite(f'depth_front.png', out['right_front'])
+    # plt.imshow(out['depth'])
+    # plt.savefig("depth_front.png")
+    # print("save to depth_front.png")
 
-            # # visualize_pointcloud(out['right_point_cloud'])
-            visualize_pointcloud(out['point_cloud'])  # non-blocking update
-    except KeyboardInterrupt:
-        pass
-    finally:
-        cam.finalize()
-        close_visualizer()
+    import visualizer
+    # visualize_pointcloud(out['right_point_cloud'])
+    visualizer.visualize_pointcloud(out['point_cloud'])
+    cam.finalize()

@@ -14,18 +14,15 @@ import h5py
 # Camera pipeline (reuse original logic)
 from multi_realsense import MultiRealSense
 
-
-def _ensure_root_imports():
-    """Allow importing arx_control modules by adding repo root to sys.path.
-
-    This mirrors the path handling in arx_control/examples/joycon_teleop.py.
-    """
-    this_dir = os.path.dirname(os.path.abspath(__file__))
-    repo_root = os.path.abspath(os.path.join(this_dir, os.pardir, os.pardir))
-    if repo_root not in sys.path:
-        sys.path.append(repo_root)
-    return repo_root
-
+# Ensure arx_control package is importable from repo root, and import arx5_interface globally
+this_dir = os.path.dirname(os.path.abspath(__file__))
+_repo_root = os.path.abspath(os.path.join(this_dir, os.pardir, os.pardir))
+if _repo_root not in sys.path:
+    sys.path.append(_repo_root)
+_arx_dir = os.path.join(_repo_root, "arx_control")
+if _arx_dir not in sys.path:
+    sys.path.append(_arx_dir)
+import arx5_interface as arx  # type: ignore
 
 class MovingAverage:
     def __init__(self, window_size: int):
@@ -94,13 +91,7 @@ class ArxDataCollector:
             front_num_points=self.front_num_points,
         )
 
-        # Import ARX controller (ensure module path)
-        repo_root = _ensure_root_imports()
-        arx_dir = os.path.join(repo_root, "arx_control")
-        if arx_dir not in sys.path:
-            sys.path.append(arx_dir)
-        import arx5_interface as arx  # type: ignore
-        self._arx = arx
+        # ARX controller (already globally imported at module top)
         self.controller = arx.Arx5CartesianController(model, interface)
 
         # Joycon (no example dependency)
@@ -145,18 +136,19 @@ class ArxDataCollector:
             await asyncio.sleep(1.0 / self.fps)
 
         cprint("Start teleop loop", "green")
+        period = 1.0 / float(self.fps)
         for i in range(self.length):
             start = time.time()
 
             cam_dict = self.camera_context()
             joy_pose, gripper, _ = self.joycon.get_control()
 
-            # # Send EEF command
-            # eef_cmd = self._arx.EEFState()
-            # eef_cmd.pose_6d()[:] = np.asarray(joy_pose[:6], dtype=np.float64)
-            # eef_cmd.gripper_pos = float(gripper)
-            # eef_cmd.timestamp = self.controller.get_timestamp()
-            # self.controller.set_eef_cmd(eef_cmd)
+            # Send EEF command
+            eef_cmd = arx.EEFState()
+            eef_cmd.pose_6d()[:] = np.asarray(joy_pose[:6], dtype=np.float64)
+            eef_cmd.gripper_pos = float(gripper)
+            eef_cmd.timestamp = self.controller.get_timestamp() + 0.01
+            self.controller.set_eef_cmd(eef_cmd)
 
             # Resize and buffer camera data
             color_resized = None
@@ -188,7 +180,10 @@ class ArxDataCollector:
             fps_now = 1.0 / max(1e-6, duration)
             text = f"time (ms): {measured_duration.get() * 1000.0: >#8.3f} | step: {i} / {self.length} | fps: {fps_now:.3f}"
             print(text, end="\r")
-            await asyncio.sleep(1.0 / self.fps)
+
+            elapsed = time.time() - start
+            wait = max(0.0, period - elapsed)
+            await asyncio.sleep(wait)
 
     
         # Cleanup and save
