@@ -355,9 +355,9 @@ class JoyconRobotics:
             self.joycon.get_button_y() if self.joycon.is_right() else self.joycon.get_button_left()
         )
         if joycon_button_gripper_open == 1:
-            self.gripper_state += 0.01 * self.gripper_speed
+            self.gripper_state += 0.001 * self.gripper_speed
         if joycon_button_gripper_close == 1:
-            self.gripper_state -= 0.01 * self.gripper_speed
+            self.gripper_state -= 0.001 * self.gripper_speed
 
         self.check_limits_gripper()
         return self.gripper_state
@@ -417,23 +417,23 @@ class JoyconRobotics:
 
     def go_to_home(self):
         if self.position[0] > self.home_position[0] + 0.002:
-            self.position[0] = self.position[0] - 0.001 * self.dof_speed[0] * 2.0
+            self.position[0] = self.position[0] - 0.001 * self.dof_speed[0] * 1.0
         elif self.position[0] < self.home_position[0] - 0.002:
-            self.position[0] = self.position[0] + 0.001 * self.dof_speed[0] * 2.0
+            self.position[0] = self.position[0] + 0.001 * self.dof_speed[0] * 1.0
         else:
             self.position[0] = self.position[0]
 
         if self.position[1] > self.home_position[1] + 0.002:
-            self.position[1] = self.position[1] - 0.001 * self.dof_speed[1] * 2.0
+            self.position[1] = self.position[1] - 0.001 * self.dof_speed[1] * 1.0
         elif self.position[1] < self.home_position[1] - 0.002:
-            self.position[1] = self.position[1] + 0.001 * self.dof_speed[1] * 2.0
+            self.position[1] = self.position[1] + 0.001 * self.dof_speed[1] * 1.0
         else:
             self.position[1] = self.position[1]
 
         if self.position[2] > self.home_position[2] + 0.002:
-            self.position[2] = self.position[2] - 0.001 * self.dof_speed[2] * 2.0
+            self.position[2] = self.position[2] - 0.001 * self.dof_speed[2] * 1.0
         elif self.position[2] < self.home_position[2] - 0.002:
-            self.position[2] = self.position[2] + 0.001 * self.dof_speed[2] * 2.0
+            self.position[2] = self.position[2] + 0.001 * self.dof_speed[2] * 1.0
         else:
             self.position[2] = self.position[2]
 

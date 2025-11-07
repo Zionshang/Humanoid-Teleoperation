@@ -61,8 +61,9 @@ def init_given_realsense_L515(
         
         # set min distance
         # for L515
-        depth_sensor.set_option(rs.option.min_distance, 0.05)
-        
+        # depth_sensor.set_option(rs.option.min_distance, 0.05)
+        depth_sensor.set_option(rs.option.visual_preset, rs.l500_visual_preset.short_range)
+
         # get depth scale
         depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
         align = rs.align(rs.stream.color)
@@ -437,23 +438,47 @@ class MultiRealSense(object):
         
 
 if __name__ == "__main__":
-    cam = MultiRealSense(use_right_cam=False, front_num_points=20000, 
+    cam = MultiRealSense(use_right_cam=False, front_num_points=10000, 
                          use_grid_sampling=True, use_crop=False, img_size=1024,
-                         front_z_far=0.5, front_z_near=0.01)
-    import matplotlib.pyplot as plt
-    out = cam()
-    print(out.keys())
+                         front_z_far=0.8, front_z_near=0.1)
 
-    # imageio.imwrite(f'color_front.png', out['color'])
-    # print("save to color_front.png")
-    # # imageio.imwrite(f'color_right.png', out['right_color'])
-    # # imageio.imwrite(f'depth_right.png', out['right_depth'])
-    # # imageio.imwrite(f'depth_front.png', out['right_front'])
-    # plt.imshow(out['depth'])
-    # plt.savefig("depth_front.png")
-    # print("save to depth_front.png")
+    import open3d as o3d
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(window_name="RealSense Live Point Cloud", width=960, height=720)
+    pcd = o3d.geometry.PointCloud()
+    added = False  # 首帧到来后再 add_geometry，避免空点云触发 AABB 警告
 
-    import visualizer
-    # visualize_pointcloud(out['right_point_cloud'])
-    visualizer.visualize_pointcloud(out['point_cloud'])
-    cam.finalize()
+    try:
+        while True:
+            out = cam()
+            pc = out.get('point_cloud', None)
+            if pc is None:
+                # 轮询事件，保持窗口响应
+                vis.poll_events(); vis.update_renderer()
+                time.sleep(0.01)
+                continue
+
+            pts = pc[:, :3].astype(np.float64)
+            cols = (pc[:, 3:6] / 255.0).astype(np.float64)
+
+            if pts.shape[0] == 0:
+                vis.poll_events(); vis.update_renderer()
+                time.sleep(0.01)
+                continue
+
+            pcd.points = o3d.utility.Vector3dVector(pts)
+            pcd.colors = o3d.utility.Vector3dVector(cols)
+
+            if not added:
+                vis.add_geometry(pcd)
+                added = True
+            else:
+                vis.update_geometry(pcd)
+            vis.poll_events()
+            vis.update_renderer()
+            time.sleep(0.01)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        vis.destroy_window()
+        cam.finalize()
