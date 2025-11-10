@@ -74,22 +74,22 @@ class ArxDataCollector:
 
         # Init ARX controller
         self.controller = arx.Arx5CartesianController(model, interface)
-        robot_config = self.controller.get_robot_config()
+        self.robot_config = self.controller.get_robot_config()
         cprint("Resetting arm to home before teleop...", "cyan")
         self.controller.reset_to_home()
 
         # open the gripper
         eef_cmd = self.controller.get_eef_state()
-        eef_cmd.gripper_pos = robot_config.gripper_width
+        eef_cmd.gripper_pos = self.robot_config.gripper_width
         eef_cmd.timestamp = self.controller.get_timestamp() + 1.0
         self.controller.set_eef_cmd(eef_cmd)
         
         # Init Joystick
         self.joystick = JoystickRobotics(
         home_position=self.controller.get_home_pose().tolist()[:3],
-        home_gripper=robot_config.gripper_width,
+        home_gripper=self.robot_config.gripper_width,
         ee_limit=[[0.0, -0.5, -0.5, -1.8, -1.6, -1.6], [0.7, 0.5, 0.5, 1.8, 1.6, 1.6]],
-        gripper_limit=[0.0, robot_config.gripper_width],
+        gripper_limit=[0.0, self.robot_config.gripper_width],
     )
 
     async def write_data(self, color: Optional[np.ndarray], depth: Optional[np.ndarray], point_cloud: Optional[np.ndarray]):
@@ -109,7 +109,6 @@ class ArxDataCollector:
         time.sleep(1.0)
         cprint("Waiting for X to start recording...", "cyan")
         while True:
-            _ = self.camera_context()
             _, _, control_button = self.joystick.get_control()
             if control_button == XboxButton.X:
                 cprint("[Joystick] X pressed -> enter teleop loop.", "green")
@@ -117,19 +116,11 @@ class ArxDataCollector:
             await asyncio.sleep(1.0 / self.fps)
 
         cprint("Start teleop loop", "green")
-        period = 1.0 / float(self.fps)
         for i in range(self.length):
             start = time.time()
 
             cam_dict = self.camera_context()
             joy_pose, gripper_pose, control_button = self.joystick.get_control()
-
-            # Send EEF command
-            eef_cmd = arx.EEFState()
-            eef_cmd.pose_6d()[:] = joy_pose
-            eef_cmd.gripper_pos = gripper_pose
-            eef_cmd.timestamp = self.controller.get_timestamp() + 0.1
-            self.controller.set_eef_cmd(eef_cmd)
 
             # Resize and buffer camera data
             color_resized = None
@@ -140,14 +131,23 @@ class ArxDataCollector:
                 depth_resized = cv2.resize(cam_dict["depth"], (self.resize_hw, self.resize_hw), interpolation=cv2.INTER_LINEAR)
             await self.write_data(color_resized, depth_resized, cam_dict.get("point_cloud"))
 
-            # Record joint state and current cmd
+            # Record robot state
             joint_state = self.controller.get_joint_state()
-            joint_cmd = self.controller.get_joint_cmd()
             pos_state = np.copy(joint_state.pos())
-            pos_cmd = np.copy(joint_cmd.pos())
             env_qpos = np.concatenate([pos_state, np.array([float(joint_state.gripper_pos)], dtype=np.float64)])
-            action = np.concatenate([pos_cmd, np.array([float(joint_cmd.gripper_pos)], dtype=np.float64)])
             self.env_qpos_array.append(env_qpos)
+
+            # Send EEF command
+            eef_cmd = arx.EEFState()
+            eef_cmd.pose_6d()[:] = joy_pose
+            eef_cmd.gripper_pos = gripper_pose
+            eef_cmd.timestamp = self.controller.get_timestamp() + 0.1
+            self.controller.set_eef_cmd(eef_cmd)
+
+            # Record robot action
+            joint_cmd = self.controller.get_joint_cmd()
+            pos_cmd = np.copy(joint_cmd.pos())
+            action = np.concatenate([pos_cmd, np.array([float(joint_cmd.gripper_pos)], dtype=np.float64)])
             self.action_array.append(action)
 
             # Stop on B
@@ -155,16 +155,20 @@ class ArxDataCollector:
                 cprint("[Joystick] B pressed -> stop recording & exit teleop.", "yellow")
                 break
 
-            elapsed = time.time() - start
-            wait = max(0.0, period - elapsed)
-            fps_now = 1.0 / max(1e-6, elapsed)
-            print(f"elapsed time (ms): {elapsed * 1000.0: >#8.3f} | step: {i} / {self.length} | fps: {fps_now:.3f}", end="\r")
-
-            await asyncio.sleep(wait)
-
+            duration = time.time() - start
+            fps = 1 / duration
+            text = f"time (ms): {duration * 1000.0: >#8.3f} | step: {i} / {self.length} | fps: {fps:.3f}"
+            print(text, end="\r")
+            await asyncio.sleep(1 / self.fps)
     
         # Cleanup and save
         self.camera_context.finalize()
+        eef_cmd = self.controller.get_eef_state()
+        eef_cmd.gripper_pos = self.robot_config.gripper_width
+        eef_cmd.timestamp = self.controller.get_timestamp() + 0.5
+        self.controller.set_eef_cmd(eef_cmd)
+        time.sleep(3.0)
+        cprint("Resetting arm to home after teleop...", "cyan")
         self.controller.reset_to_home()
         self.controller.set_to_damping()
 

@@ -79,9 +79,9 @@ def convert_dataset(args):
             new_cloud_array = []
             for i in range(length):
                 old_cloud = cloud_array[i]
-                if old_cloud.shape[0] > 4096:
+                if old_cloud.shape[0] > 10000:
                     # Randomly sample points
-                    selected_idx = np.random.choice(old_cloud.shape[0], 4096, replace=True)
+                    selected_idx = np.random.choice(old_cloud.shape[0], 10000, replace=True)
                     new_cloud = old_cloud[selected_idx]
                 else:
                     new_cloud = old_cloud

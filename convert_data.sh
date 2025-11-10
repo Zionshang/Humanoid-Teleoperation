@@ -6,7 +6,7 @@ save_depth=0
 
 
 demo_path=/home/zishang/python-ws/Humanoid-Teleoperation/demo_dir/raw_data
-save_path=/home/zishang/python-ws/Humanoid-Teleoperation/demo_dir/training_data_kettle
+save_path=/home/zishang/python-ws/Humanoid-Teleoperation/demo_dir/training_data_bottle
 
 cd humanoid_teleoperation/scripts
 python convert_demos.py --demo_dir ${demo_path} \

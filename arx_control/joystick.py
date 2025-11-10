@@ -126,9 +126,9 @@ class JoystickRobotics:
                     self.position[2] += self.trans_step[2] * (hat_v) * self.trans_reverse[2]
 
                     # 姿态（右摇杆：水平=roll，垂直=pitch；X/B 调 yaw）
-                    self.euler[0] += self.orient_step[0] * (r_stick_h) * self.euler_reverse[0]  # roll
+                    self.euler[0] += self.orient_step[0] * (hat_h) * self.euler_reverse[0]  # roll
                     self.euler[1] += self.orient_step[1] * (-r_stick_v) * self.euler_reverse[1]  # pitch
-                    self.euler[2] += self.orient_step[2] * (-hat_h) * self.euler_reverse[2]  # yaw
+                    self.euler[2] += self.orient_step[2] * (-r_stick_h) * self.euler_reverse[2]  # yaw
 
                     # 夹爪（LB 关，RB 开）
                     if buttons[XboxButton.LB]:

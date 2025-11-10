@@ -24,24 +24,6 @@ if _arx_dir not in sys.path:
     sys.path.append(_arx_dir)
 import arx5_interface as arx  # type: ignore
 
-class MovingAverage:
-    def __init__(self, window_size: int):
-        self.window_size = window_size
-        self.window = []
-
-    def next(self, val: float) -> float:
-        if len(self.window) < self.window_size:
-            self.window.append(val)
-            return sum(self.window) / max(1, len(self.window))
-        else:
-            self.window.pop(0)
-            self.window.append(val)
-            return sum(self.window) / self.window_size
-
-    def get(self) -> float:
-        return sum(self.window) / max(1, len(self.window))
-
-
 class ArxDataCollector:
     """
     Collect synchronized observations from MultiRealSense and ARX5 controller.
@@ -86,8 +68,8 @@ class ArxDataCollector:
         self.camera_context = MultiRealSense(
             use_front_cam=True,
             use_right_cam=False,
-            front_num_points=4096,
-            front_z_far=1.0, front_z_near=0.1,
+            front_num_points=10000,
+            front_z_far=0.8, front_z_near=0.1,
         )
 
         # ARX controller (already globally imported at module top)
@@ -126,7 +108,6 @@ class ArxDataCollector:
 
     async def run(self):
         cprint("ARX DataCollector starting...", "cyan")
-        measured_duration = MovingAverage(10)
         os.makedirs(self.demo_dir, exist_ok=True)
         record_file_name = os.path.join(self.demo_dir, f"{self.demo_name}.h5")
 
@@ -147,7 +128,10 @@ class ArxDataCollector:
         for i in range(self.length):
             start = time.time()
 
+            time_start = time.time()
             cam_dict = self.camera_context()
+            time_end = time.time()
+            print(f"Camera read time (ms): {(time_end - time_start) * 1000.0: >#8.3f}")
             joy_pose, gripper_pose, _ = self.joycon.get_control()
 
             # Send EEF command
@@ -182,14 +166,11 @@ class ArxDataCollector:
                 cprint("[Joycon] B pressed -> stop recording & exit teleop.", "yellow")
                 break
 
-            duration = time.time() - start
-            measured_duration.next(duration)
-            fps_now = 1.0 / max(1e-6, duration)
-            text = f"time (ms): {measured_duration.get() * 1000.0: >#8.3f} | step: {i} / {self.length} | fps: {fps_now:.3f}"
-            print(text, end="\r")
-
             elapsed = time.time() - start
             wait = max(0.0, period - elapsed)
+            fps_now = 1.0 / max(1e-6, elapsed)
+            print(f"time (ms): {elapsed * 1000.0: >#8.3f} | step: {i} / {self.length} | fps: {fps_now:.3f}")
+
             await asyncio.sleep(wait)
 
     
