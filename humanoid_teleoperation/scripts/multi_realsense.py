@@ -439,46 +439,29 @@ class MultiRealSense(object):
 
 if __name__ == "__main__":
     cam = MultiRealSense(use_right_cam=False, front_num_points=10000, 
-                         use_grid_sampling=True, use_crop=False, img_size=1024,
-                         front_z_far=0.8, front_z_near=0.1)
+                        use_grid_sampling=True, use_crop=False, img_size=1024,
+                        front_z_far=1.0, front_z_near=0.2)
 
-    import open3d as o3d
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(window_name="RealSense Live Point Cloud", width=960, height=720)
-    pcd = o3d.geometry.PointCloud()
-    added = False  # 首帧到来后再 add_geometry，避免空点云触发 AABB 警告
+    from open3d_viz import AsyncPointCloudViewer
+
+    viewer = AsyncPointCloudViewer(
+        width=960,
+        height=720,
+        point_size=2.0,
+        queue_size=1,
+        window_name="RealSense Live Point Cloud",
+    )
 
     try:
         while True:
             out = cam()
-            pc = out.get('point_cloud', None)
-            if pc is None:
-                # 轮询事件，保持窗口响应
-                vis.poll_events(); vis.update_renderer()
-                time.sleep(0.01)
-                continue
-
-            pts = pc[:, :3].astype(np.float64)
-            cols = (pc[:, 3:6] / 255.0).astype(np.float64)
-
-            if pts.shape[0] == 0:
-                vis.poll_events(); vis.update_renderer()
-                time.sleep(0.01)
-                continue
-
-            pcd.points = o3d.utility.Vector3dVector(pts)
-            pcd.colors = o3d.utility.Vector3dVector(cols)
-
-            if not added:
-                vis.add_geometry(pcd)
-                added = True
+            pc = out.get("point_cloud", None)
+            if pc is not None and pc.size:
+                viewer.update(pc)
             else:
-                vis.update_geometry(pcd)
-            vis.poll_events()
-            vis.update_renderer()
-            time.sleep(0.01)
+                time.sleep(0.01)
     except KeyboardInterrupt:
         pass
     finally:
-        vis.destroy_window()
+        viewer.close()
         cam.finalize()

@@ -69,7 +69,7 @@ class ArxDataCollector:
             use_front_cam=True,
             use_right_cam=False,
             front_num_points=10000,
-            front_z_far=0.8, front_z_near=0.1,
+            front_z_far=1.0, front_z_near=0.2,
         )
 
         # Init ARX controller
