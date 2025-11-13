@@ -3,10 +3,11 @@ import cv2
 import numpy as np
 from collections import deque 
 import imageio
-import pyrealsense2 as rs
-from multiprocessing import Process, Pipe, Queue, Event
+import pyrealsense2 as rs  # type: ignore
+from multiprocessing import Process, Queue
 import time
 import multiprocessing
+from typing import Optional
 multiprocessing.set_start_method('fork')
 
 np.printoptions(3, suppress=True)
@@ -233,8 +234,8 @@ class SingleVisionProcess(Process):
                 z_far=1.0,
                 z_near=0.1,
                 use_grid_sampling=True,
-                use_crop=False,
-                img_size=384) -> None:
+                img_size=384,
+                yolo_config: Optional[dict] = None) -> None:
         super(SingleVisionProcess, self).__init__()
         self.queue = queue
         self.device = device
@@ -245,10 +246,9 @@ class SingleVisionProcess(Process):
         self.sync_mode = sync_mode
             
         self.use_grid_sampling = use_grid_sampling
-        self.use_crop = use_crop
 
   
-        self.resize = True
+        self.resize = False
         # self.height, self.width = 512, 512
         self.height, self.width = img_size, img_size
         
@@ -256,9 +256,17 @@ class SingleVisionProcess(Process):
         self.z_far = z_far
         self.z_near = z_near
         self.num_points = num_points
-   
+
+        # segmentation config/provider
+        self.mask_provider = None
+        # use fg_ratio from yolo_config if provided, else default 0.7
+        self.fg_ratio = float(yolo_config.get('fg_ratio', 0.7)) if yolo_config else 0.7
+        # optional provider config to build YOLO inside child process (GPU-safe)
+        self.yolo_config = yolo_config
+    
     def get_vision(self):
         frame = self.pipeline.wait_for_frames()
+        seg_mask = None
 
         if self.enable_depth:
             aligned_frames = self.align.process(frame)
@@ -277,9 +285,20 @@ class SingleVisionProcess(Process):
             depth_frame[depth_frame > clip_high] = clip_high
             
             if self.enable_pointcloud:
+                # Optional: run external segmentation to get a binary mask on the color frame
+                if self.mask_provider is not None:
+                    seg_mask = self.mask_provider(color_frame)
+
                 # Nx6
-                point_cloud_frame = self.create_colored_point_cloud(color_frame, depth_frame, 
-                            far=self.z_far, near=self.z_near, num_points=self.num_points, use_crop=self.use_crop)
+                point_cloud_frame = self.create_colored_point_cloud(
+                    color_frame,
+                    depth_frame,
+                    far=self.z_far,
+                    near=self.z_near,
+                    num_points=self.num_points,
+                    seg_mask=seg_mask,
+                    fg_ratio=self.fg_ratio,
+                )
             else:
                 point_cloud_frame = None
         else:
@@ -296,7 +315,7 @@ class SingleVisionProcess(Process):
                 color_frame = cv2.resize(color_frame, (self.width, self.height), interpolation=cv2.INTER_LINEAR)
             if self.enable_depth:
                 depth_frame = cv2.resize(depth_frame, (self.width, self.height), interpolation=cv2.INTER_LINEAR)
-        return color_frame, depth_frame, point_cloud_frame
+        return color_frame, depth_frame, point_cloud_frame, seg_mask
 
 
     def run(self):
@@ -308,25 +327,34 @@ class SingleVisionProcess(Process):
         elif device_name == "D455":
             init_given_realsense = init_given_realsense_D455
         
+        if self.mask_provider is None and self.yolo_config is not None:
+            from ultralytics import YOLO  # type: ignore
+            from yolo_segmentation import YoloSegmentation
+            model_path = self.yolo_config.get('model_path', 'yolov8n-seg.pt')
+            device = self.yolo_config.get('device', 'cuda:0')
+            classes = self.yolo_config.get('classes', None)
+            conf = float(self.yolo_config.get('conf', 0.25))
+            yolo_model = YOLO(model_path)
+            yolo_model.to(device)
+            self.mask_provider = YoloSegmentation(model=yolo_model, target_classes=classes, conf=conf)
+            self.fg_ratio = float(self.yolo_config.get('fg_ratio', self.fg_ratio))
+            print('[INFO] Child process YOLO segmentation initialized on', device)
+
         self.pipeline, self.align, self.depth_scale, self.camera_info = init_given_realsense(self.device, 
                     enable_rgb=self.enable_rgb, enable_depth=self.enable_depth,
                     enable_point_cloud=self.enable_pointcloud,
                     sync_mode=self.sync_mode)
 
-        debug = False
         while True:
-            color_frame, depth_frame, point_cloud_frame = self.get_vision()
-            self.queue.put([color_frame, depth_frame, point_cloud_frame])
+            color_frame, depth_frame, point_cloud_frame, seg_mask = self.get_vision()
+            self.queue.put([color_frame, depth_frame, point_cloud_frame, seg_mask])
             time.sleep(0.05)
 
     def terminate(self) -> None:
         # self.pipeline.stop()
         return super().terminate()
 
-    def crop_point_cloud(self, point_cloud):
-        # Nx6
-        pass
-    def create_colored_point_cloud(self, color, depth, far=1.0, near=0.1, num_points=10000, use_crop=False):
+    def create_colored_point_cloud(self, color, depth, far=1.0, near=0.1, num_points=10000, seg_mask=None, fg_ratio=0.7):
         assert(depth.shape[0] == color.shape[0] and depth.shape[1] == color.shape[1])
     
         # Create meshgrid for pixel coordinates
@@ -342,28 +370,70 @@ class SingleVisionProcess(Process):
         cloud = cloud.reshape([-1, 3])
         
         # Clip points based on depth
-        mask = (cloud[:, 2] < far) & (cloud[:, 2] > near)
-        cloud = cloud[mask]
+        valid_mask = (cloud[:, 2] < far) & (cloud[:, 2] > near)
+        cloud = cloud[valid_mask]
         color = color.reshape([-1, 3])
-        color = color[mask]
+        color = color[valid_mask]
+
+        # flatten segmentation mask and sync with valid_mask
+        seg_flat = None
+        if seg_mask is not None:
+            seg_flat = seg_mask.reshape(-1)[valid_mask]
+            seg_flat = seg_flat.astype(bool)
 
 
         colored_cloud = np.hstack([cloud, color.astype(np.float32)])
-        # print("shape 0:", colored_cloud.shape)
-        if self.use_grid_sampling:
-            colored_cloud = grid_sample_pcd(colored_cloud, grid_size=0.005)
-        # print("shape 1:", colored_cloud.shape)
-        
-        if use_crop:
-            colored_cloud = self.crop_point_cloud(colored_cloud)
-        if num_points > colored_cloud.shape[0]:
-            num_pad = num_points - colored_cloud.shape[0]
-            pad_points = np.zeros((num_pad, 6))
-            colored_cloud = np.concatenate([colored_cloud, pad_points], axis=0)
-        else: 
-            # Randomly sample points
-            selected_idx = np.random.choice(colored_cloud.shape[0], num_points, replace=True)
-            colored_cloud = colored_cloud[selected_idx]
+
+        def voxel_downsample(pcd):
+            if not self.use_grid_sampling or pcd.shape[0] == 0:
+                return pcd
+            return grid_sample_pcd(pcd, grid_size=0.005)
+
+        def uniform_downsample(pcd, k):
+            n = pcd.shape[0]
+            if n == 0:
+                return np.zeros((0, 6), dtype=np.float32)
+            if n >= k:
+                idx = np.random.choice(n, k, replace=False)
+                return pcd[idx]
+            # n < k: sample with replacement to reach k
+            idx = np.random.choice(n, k, replace=True)
+            return pcd[idx]
+
+        if seg_flat is None:
+            # uniform voxel downsample then uniform sample
+            colored_cloud = voxel_downsample(colored_cloud)
+            if num_points > colored_cloud.shape[0]:
+                num_pad = num_points - colored_cloud.shape[0]
+                pad_points = np.zeros((num_pad, 6), dtype=np.float32)
+                colored_cloud = np.concatenate([colored_cloud, pad_points], axis=0)
+            else:
+                selected_idx = np.random.choice(colored_cloud.shape[0], num_points, replace=True)
+                colored_cloud = colored_cloud[selected_idx]
+        else:
+            # foreground/background separate strategy
+            fg_cloud = colored_cloud[seg_flat]
+            bg_cloud = colored_cloud[~seg_flat]
+
+            fg_cloud = voxel_downsample(fg_cloud)
+            bg_cloud = voxel_downsample(bg_cloud)
+
+            fg_target = int(num_points * float(fg_ratio))
+            fg_target = max(0, min(num_points, fg_target))
+            bg_target = max(0, num_points - fg_target)
+
+            # If one side lacks enough unique points even with replacement, we still honor target by replacement
+            fg_sel = uniform_downsample(fg_cloud, fg_target) if fg_target > 0 else np.zeros((0, 6), dtype=np.float32)
+            bg_sel = uniform_downsample(bg_cloud, bg_target) if bg_target > 0 else np.zeros((0, 6), dtype=np.float32)
+
+            colored_cloud = np.concatenate([fg_sel, bg_sel], axis=0)
+            # Safety: if due to rounding it's not exactly num_points
+            if colored_cloud.shape[0] < num_points:
+                pad = np.zeros((num_points - colored_cloud.shape[0], 6), dtype=np.float32)
+                colored_cloud = np.concatenate([colored_cloud, pad], axis=0)
+            elif colored_cloud.shape[0] > num_points:
+                idx = np.random.choice(colored_cloud.shape[0], num_points, replace=False)
+                colored_cloud = colored_cloud[idx]
         
         # shuffle
         np.random.shuffle(colored_cloud)
@@ -378,8 +448,10 @@ class MultiRealSense(object):
                  front_num_points=4096, right_num_points=1024,
                  front_z_far=1.0, front_z_near=0.1,
                  right_z_far=0.5, right_z_near=0.01,
-                 use_grid_sampling=True, use_crop=False, 
-                 img_size=512):
+                 use_grid_sampling=True, 
+                 img_size=512,
+                 yolo_config: Optional[dict] = None,
+                 ):
 
         self.devices = get_realsense_id()
     
@@ -395,12 +467,14 @@ class MultiRealSense(object):
             self.front_process = SingleVisionProcess(self.devices[front_cam_idx], self.front_queue,
                             enable_rgb=True, enable_depth=True, enable_pointcloud=True, sync_mode=1,
                             num_points=front_num_points, z_far=front_z_far, z_near=front_z_near, 
-                            use_grid_sampling=use_grid_sampling, use_crop=use_crop, img_size=img_size)
+                            use_grid_sampling=use_grid_sampling, img_size=img_size,
+                            yolo_config=yolo_config)
         if use_right_cam:
             self.right_process = SingleVisionProcess(self.devices[right_cam_idx], self.right_queue,
                     enable_rgb=True, enable_depth=True, enable_pointcloud=True, sync_mode=1,
                         num_points=right_num_points, z_far=right_z_far, z_near=right_z_near, 
-                        use_grid_sampling=use_grid_sampling, use_crop=use_crop, img_size=img_size)
+                        use_grid_sampling=use_grid_sampling, img_size=img_size,
+                        yolo_config=yolo_config)
 
 
         if use_front_cam:
@@ -418,12 +492,12 @@ class MultiRealSense(object):
     def __call__(self):  
         cam_dict = {}
         if self.use_front_cam:  
-            front_color, front_depth, front_point_cloud = self.front_queue.get()
-            cam_dict.update({'color': front_color, 'depth': front_depth, 'point_cloud':front_point_cloud})
+            front_color, front_depth, front_point_cloud, front_mask = self.front_queue.get()
+            cam_dict.update({'color': front_color, 'depth': front_depth, 'point_cloud':front_point_cloud, 'mask': front_mask})
       
         if self.use_right_cam: 
-            right_color, right_depth, right_point_cloud = self.right_queue.get()
-            cam_dict.update({'right_color': right_color, 'right_depth': right_depth, 'right_point_cloud':right_point_cloud})
+            right_color, right_depth, right_point_cloud, right_mask = self.right_queue.get()
+            cam_dict.update({'right_color': right_color, 'right_depth': right_depth, 'right_point_cloud':right_point_cloud, 'right_mask': right_mask})
         return cam_dict
 
     def finalize(self):
@@ -438,12 +512,21 @@ class MultiRealSense(object):
         
 
 if __name__ == "__main__":
-    cam = MultiRealSense(use_right_cam=False, front_num_points=10000, 
-                        use_grid_sampling=True, use_crop=False, img_size=1024,
-                        front_z_far=1.0, front_z_near=0.2)
+    # 配置在子进程内构建 YOLO
+    YOLO_CONFIG = {
+        'model_path': 'yolov8n-seg.pt',
+        'device': 'cuda:0',   # 改为你的 GPU，例如 'cuda:0'
+        'classes': {39},      # COCO 类别集合；None 表示不过滤
+        'conf': 0.25,
+        'fg_ratio': 0.8,
+    }
+
+    cam = MultiRealSense(use_right_cam=False, front_num_points=10000,
+                         use_grid_sampling=True, img_size=1024,
+                         front_z_far=1.0, front_z_near=0.2,
+                         yolo_config=YOLO_CONFIG)
 
     from open3d_viz import AsyncPointCloudViewer
-
     viewer = AsyncPointCloudViewer(
         width=960,
         height=720,
@@ -452,16 +535,36 @@ if __name__ == "__main__":
         window_name="RealSense Live Point Cloud",
     )
 
-    try:
-        while True:
-            out = cam()
-            pc = out.get("point_cloud", None)
-            if pc is not None and pc.size:
-                viewer.update(pc)
+    while True:
+        # measure and print the time taken by cam()
+        t0 = time.perf_counter()
+        out = cam()
+        t1 = time.perf_counter()
+        print(f"cam() took {(t1 - t0) * 1000:.2f} ms")
+        # visualize point cloud in Open3D
+        pc = out.get("point_cloud", None)
+        if pc is not None and pc.size:
+            viewer.update(pc)
+        else:
+            time.sleep(0.01)
+
+        # visualize color + mask overlay
+        color = out.get('color', None)
+        if color is not None:
+            bgr = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
+            mask = out.get('mask', None)
+            # inline visualize_mask to avoid extra imports
+            if mask is not None:
+                m = mask.astype(bool)
+                o = bgr.copy()
+                o[m] = (0, 255, 0)
+                vis = cv2.addWeighted(o, 0.5, bgr, 0.5, 0)
             else:
-                time.sleep(0.01)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        viewer.close()
-        cam.finalize()
+                vis = bgr
+            cv2.imshow('Color+Mask', vis)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+    viewer.close()
+    cam.finalize()
+    cv2.destroyAllWindows()
