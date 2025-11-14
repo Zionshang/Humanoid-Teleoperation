@@ -213,6 +213,21 @@ def grid_sample_pcd(point_cloud, grid_size=0.005):
     return point_cloud[indices]
 
 
+def uniform_sample_pcd(pcd: np.ndarray, k: int) -> np.ndarray:
+    """简单的均匀采样/填充函数：
+    若点数 >= k，则随机有放回采样 k 个点；若点数 < k，则末尾补零点直到 k"""
+    n, dim = pcd.shape
+    if k <= 0:
+        return np.zeros((0, dim), dtype=pcd.dtype)
+    if n >= k:
+        idx = np.random.choice(n, k, replace=True)  # 与原片段保持 replace=True
+        return pcd[idx]
+    else:
+        num_pad = k - n
+        pad_points = np.zeros((num_pad, dim), dtype=pcd.dtype)
+        return np.concatenate([pcd, pad_points], axis=0)
+
+
 class CameraInfo():
     """ Camera intrisics for point cloud creation. """
     def __init__(self, width, height, fx, fy, cx, cy, scale = 1) :
@@ -287,7 +302,10 @@ class SingleVisionProcess(Process):
             if self.enable_pointcloud:
                 # Optional: run external segmentation to get a binary mask on the color frame
                 if self.mask_provider is not None:
+                    t_start = time.perf_counter()
                     seg_mask = self.mask_provider(color_frame)
+                    t_end = time.perf_counter()
+                    print(f"seg_mask generation took {(t_end - t_start) * 1000:.2f} ms")
 
                 # Nx6
                 point_cloud_frame = self.create_colored_point_cloud(
@@ -329,16 +347,25 @@ class SingleVisionProcess(Process):
         
         if self.mask_provider is None and self.yolo_config is not None:
             from ultralytics import YOLO  # type: ignore
-            from yolo_segmentation import YoloSegmentation
             model_path = self.yolo_config.get('model_path', 'yolov8n-seg.pt')
             device = self.yolo_config.get('device', 'cuda:0')
             classes = self.yolo_config.get('classes', None)
             conf = float(self.yolo_config.get('conf', 0.25))
+
             yolo_model = YOLO(model_path)
             yolo_model.to(device)
-            self.mask_provider = YoloSegmentation(model=yolo_model, target_classes=classes, conf=conf)
+
+            mode = str(self.yolo_config.get('mode', 'segment')).lower()
+            if mode == 'detect':
+                from yolo_detection import YoloDetection
+                self.mask_provider = YoloDetection(model=yolo_model, target_classes=classes, conf=conf)
+                print('[INFO] Child process YOLO detection-mask initialized on', device)
+            else:
+                from yolo_segmentation import YoloSegmentation
+                self.mask_provider = YoloSegmentation(model=yolo_model, target_classes=classes, conf=conf)
+                print('[INFO] Child process YOLO segmentation initialized on', device)
+
             self.fg_ratio = float(self.yolo_config.get('fg_ratio', self.fg_ratio))
-            print('[INFO] Child process YOLO segmentation initialized on', device)
 
         self.pipeline, self.align, self.depth_scale, self.camera_info = init_given_realsense(self.device, 
                     enable_rgb=self.enable_rgb, enable_depth=self.enable_depth,
@@ -384,60 +411,30 @@ class SingleVisionProcess(Process):
 
         colored_cloud = np.hstack([cloud, color.astype(np.float32)])
 
-        def voxel_downsample(pcd):
-            if not self.use_grid_sampling or pcd.shape[0] == 0:
-                return pcd
-            return grid_sample_pcd(pcd, grid_size=0.005)
-
-        def uniform_downsample(pcd, k):
-            n = pcd.shape[0]
-            if n == 0:
-                return np.zeros((0, 6), dtype=np.float32)
-            if n >= k:
-                idx = np.random.choice(n, k, replace=False)
-                return pcd[idx]
-            # n < k: sample with replacement to reach k
-            idx = np.random.choice(n, k, replace=True)
-            return pcd[idx]
-
         if seg_flat is None:
-            # uniform voxel downsample then uniform sample
-            colored_cloud = voxel_downsample(colored_cloud)
-            if num_points > colored_cloud.shape[0]:
-                num_pad = num_points - colored_cloud.shape[0]
-                pad_points = np.zeros((num_pad, 6), dtype=np.float32)
-                colored_cloud = np.concatenate([colored_cloud, pad_points], axis=0)
-            else:
-                selected_idx = np.random.choice(colored_cloud.shape[0], num_points, replace=True)
-                colored_cloud = colored_cloud[selected_idx]
+            # 先体素下采样，然后均匀采样
+            if self.use_grid_sampling and colored_cloud.shape[0] > 0:
+                colored_cloud = grid_sample_pcd(colored_cloud, grid_size=0.005)
+            colored_cloud = uniform_sample_pcd(colored_cloud, num_points)
         else:
             # foreground/background separate strategy
             fg_cloud = colored_cloud[seg_flat]
             bg_cloud = colored_cloud[~seg_flat]
+            num_fg_cloud = int(num_points * fg_ratio)
+            num_bg_cloud = num_points - num_fg_cloud
 
-            fg_cloud = voxel_downsample(fg_cloud)
-            bg_cloud = voxel_downsample(bg_cloud)
+            if self.use_grid_sampling:
+                if fg_cloud.shape[0] > 0:
+                    fg_cloud = grid_sample_pcd(fg_cloud, grid_size=0.005)
+                if bg_cloud.shape[0] > 0:
+                    bg_cloud = grid_sample_pcd(bg_cloud, grid_size=0.005)
 
-            fg_target = int(num_points * float(fg_ratio))
-            fg_target = max(0, min(num_points, fg_target))
-            bg_target = max(0, num_points - fg_target)
-
-            # If one side lacks enough unique points even with replacement, we still honor target by replacement
-            fg_sel = uniform_downsample(fg_cloud, fg_target) if fg_target > 0 else np.zeros((0, 6), dtype=np.float32)
-            bg_sel = uniform_downsample(bg_cloud, bg_target) if bg_target > 0 else np.zeros((0, 6), dtype=np.float32)
-
+            fg_sel = uniform_sample_pcd(fg_cloud, num_fg_cloud) if num_fg_cloud > 0 else np.zeros((0, 6), dtype=np.float32)
+            bg_sel = uniform_sample_pcd(bg_cloud, num_bg_cloud) if num_bg_cloud > 0 else np.zeros((0, 6), dtype=np.float32)
             colored_cloud = np.concatenate([fg_sel, bg_sel], axis=0)
-            # Safety: if due to rounding it's not exactly num_points
-            if colored_cloud.shape[0] < num_points:
-                pad = np.zeros((num_points - colored_cloud.shape[0], 6), dtype=np.float32)
-                colored_cloud = np.concatenate([colored_cloud, pad], axis=0)
-            elif colored_cloud.shape[0] > num_points:
-                idx = np.random.choice(colored_cloud.shape[0], num_points, replace=False)
-                colored_cloud = colored_cloud[idx]
         
         # shuffle
         np.random.shuffle(colored_cloud)
-        # print("shape 2:", colored_cloud.shape)
         return colored_cloud
 
 
@@ -514,11 +511,12 @@ class MultiRealSense(object):
 if __name__ == "__main__":
     # 配置在子进程内构建 YOLO
     YOLO_CONFIG = {
-        'model_path': 'yolov8n-seg.pt',
-        'device': 'cuda:0',   # 改为你的 GPU，例如 'cuda:0'
-        'classes': {39},      # COCO 类别集合；None 表示不过滤
+        'model_path': 'yolo11n.pt',
+        'device': 'cuda:0',    # 改为你的 GPU，例如 'cuda:0'
+        'classes': {39},       # COCO 类别集合；None 表示不过滤
         'conf': 0.25,
-        'fg_ratio': 0.8,
+        'fg_ratio': 0.8,       # 前景点比例，仅在使用分割或检测掩码时影响前景/背景分配
+        'mode': 'detect',      # 只能是 'detect' 或 'segment'；'detect' 用检测框生成掩码，'segment' 用分割掩码
     }
 
     cam = MultiRealSense(use_right_cam=False, front_num_points=10000,
