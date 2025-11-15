@@ -8,7 +8,7 @@ from multiprocessing import Process, Queue
 import time
 import multiprocessing
 from typing import Optional
-multiprocessing.set_start_method('fork')
+multiprocessing.set_start_method('spawn', force=True)
 
 np.printoptions(3, suppress=True)
 
@@ -302,10 +302,7 @@ class SingleVisionProcess(Process):
             if self.enable_pointcloud:
                 # Optional: run external segmentation to get a binary mask on the color frame
                 if self.mask_provider is not None:
-                    t_start = time.perf_counter()
                     seg_mask = self.mask_provider(color_frame)
-                    t_end = time.perf_counter()
-                    print(f"seg_mask generation took {(t_end - t_start) * 1000:.2f} ms")
 
                 # Nx6
                 point_cloud_frame = self.create_colored_point_cloud(

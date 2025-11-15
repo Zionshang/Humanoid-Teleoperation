@@ -11,6 +11,7 @@ def _viewer_loop(queue, width=960, height=720, point_size=2.0, window_name="Live
     """子进程渲染循环：接收 (points, colors) 或 "__quit__"，展示最新点云。"""
     vis = o3d.visualization.Visualizer()  # type: ignore[attr-defined]
     vis.create_window(window_name=window_name, width=width, height=height, visible=True)
+    view_control = vis.get_view_control()
     pcd = o3d.geometry.PointCloud()
 
     added = False
@@ -43,6 +44,10 @@ def _viewer_loop(queue, width=960, height=720, point_size=2.0, window_name="Live
                 if not added:
                     vis.add_geometry(pcd)
                     vis.get_render_option().point_size = point_size
+                    center = np.mean(last_pts, axis=0)
+                    view_control.set_lookat(center)
+                    view_control.set_front(np.array([0.0, 0.0, -1.0], dtype=np.float64))
+                    view_control.set_up(np.array([0.0, -1.0, 0.0], dtype=np.float64))
                     added = True
                 else:
                     vis.update_geometry(pcd)

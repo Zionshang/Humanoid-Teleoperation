@@ -12,6 +12,8 @@ from termcolor import cprint
 import threading
 import h5py
 
+from open3d_viz import AsyncPointCloudViewer
+
 # Camera pipeline (reuse original logic)
 from multi_realsense import MultiRealSense
 
@@ -46,6 +48,7 @@ class ArxDataCollector:
         resize_hw: int = 224,
         save_img: bool = True,
         save_depth: bool = True,
+        viz_cloud: bool = True,
     ) -> None:
         self.fps = int(fps)
         self.length = int(length)
@@ -53,6 +56,7 @@ class ArxDataCollector:
         self.resize_hw = int(resize_hw)
         self.save_img = bool(save_img)
         self.save_depth = bool(save_depth)
+        self.viz_cloud = bool(viz_cloud)
 
         # Async lock for safe writes
         self.lock = asyncio.Lock()
@@ -65,12 +69,21 @@ class ArxDataCollector:
         self.action_array = []
 
         # Camera
+        yolo_config = {
+        'model_path': 'yolo11n.pt',
+        'device': 'cuda:0',    # 改为 CPU，避免 CUDA 初始化失败
+        'classes': {39},       # COCO 类别集合；None 表示不过滤
+        'conf': 0.25,
+        'fg_ratio': 0.8,       # 前景点比例，仅在使用分割或检测掩码时影响前景/背景分配
+        'mode': 'detect',      # 只能是 'detect' 或 'segment'；'detect' 用检测框生成掩码，'segment' 用分割掩码
+        }
+
         self.camera_context = MultiRealSense(
             use_front_cam=True,
             use_right_cam=False,
             front_num_points=10000,
             front_z_far=1.0, front_z_near=0.2,
-        )
+            yolo_config=yolo_config)
 
         # Init ARX controller
         self.controller = arx.Arx5CartesianController(model, interface)
@@ -92,6 +105,18 @@ class ArxDataCollector:
         gripper_limit=[0.0, self.robot_config.gripper_width],
     )
 
+        # 轻量级点云可视化（独立进程，默认打开，可通过参数关闭）
+        self.pcd_viewer = None
+        if self.viz_cloud:
+            self.pcd_viewer = AsyncPointCloudViewer(
+                width=640,
+                height=480,
+                point_size=5,
+                queue_size=1,
+                window_name="ARX Live Point Cloud",
+            )
+            cprint("Open3D 点云可视化已启用（独立进程）", "cyan")
+
     async def write_data(self, color: Optional[np.ndarray], depth: Optional[np.ndarray], point_cloud: Optional[np.ndarray]):
         async with self.lock:
             if self.save_img and color is not None:
@@ -109,6 +134,11 @@ class ArxDataCollector:
         time.sleep(1.0)
         cprint("Waiting for X to start recording...", "cyan")
         while True:
+            cam_dict = self.camera_context()
+            point_cloud = cam_dict.get("point_cloud", None)
+            if self.pcd_viewer is not None and point_cloud is not None:
+                self.pcd_viewer.update(point_cloud)
+
             _, _, control_button = self.joystick.get_control()
             if control_button == XboxButton.X:
                 cprint("[Joystick] X pressed -> enter teleop loop.", "green")
@@ -129,7 +159,13 @@ class ArxDataCollector:
                 color_resized = cv2.resize(cam_dict["color"], (self.resize_hw, self.resize_hw), interpolation=cv2.INTER_LINEAR)
             if self.save_depth and "depth" in cam_dict and cam_dict["depth"] is not None:
                 depth_resized = cv2.resize(cam_dict["depth"], (self.resize_hw, self.resize_hw), interpolation=cv2.INTER_LINEAR)
-            await self.write_data(color_resized, depth_resized, cam_dict.get("point_cloud"))
+
+            # 点云可视化
+            point_cloud = cam_dict.get("point_cloud", None)
+            if self.pcd_viewer is not None and point_cloud is not None:
+                self.pcd_viewer.update(point_cloud)
+
+            await self.write_data(color_resized, depth_resized, point_cloud)
 
             # Record robot state
             joint_state = self.controller.get_joint_state()
@@ -196,6 +232,11 @@ class ArxDataCollector:
         cprint(f"cloud shape: {cloud_array.shape}", "yellow")
         cprint(f"action shape: {action_array.shape}", "yellow")
         cprint(f"env_qpos shape: {env_qpos_array.shape}", "yellow")
+
+        # 关闭点云可视化进程
+        if self.pcd_viewer is not None:
+            self.pcd_viewer.close()
+
         cprint(f"save data at step: {seq_length} in {record_file_name}", "yellow")
         cprint(f"Final saved file: {record_file_name}", "green")
         cprint("Program finished.", "green")
@@ -214,6 +255,7 @@ def build_argparser():
     parser.add_argument("--resize", type=int, default=224, help="color/depth resize square size")
     parser.add_argument("--save_img", type=int, default=1, help="save color images (1/0)")
     parser.add_argument("--save_depth", type=int, default=1, help="save depth maps (1/0)")
+    parser.add_argument("--viz_cloud", type=int, default=1, help="whether to visualize live point cloud with open3d (1/0)")
     return parser
 
 
@@ -231,6 +273,7 @@ async def main_async(args=None):
         resize_hw=args.resize,
         save_img=bool(args.save_img),
         save_depth=bool(args.save_depth),
+        viz_cloud=bool(args.viz_cloud),
     )
 
     await collector.run()
