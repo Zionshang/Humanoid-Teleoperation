@@ -1,0 +1,3 @@
+[submodule "arx5-sdk"]
+	path = arx5-sdk
+	url = https://github.com/Zionshang/arx5-sdk.git
