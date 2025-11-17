@@ -10,7 +10,14 @@ import zarr
 from termcolor import cprint
 from tqdm import tqdm
 import argparse
+from pcd_downsampling import grid_sample_pcd, color_weighted_downsample, random_uniform_downsample
 
+
+def _parse_color_arg(color_str: str):
+    parts = [p.strip() for p in color_str.split(",")]
+    if len(parts) != 3:
+        raise ValueError(f"color_target must have 3 comma-separated values, got '{color_str}'")
+    return tuple(float(p) for p in parts)
 
 
 def convert_dataset(args):
@@ -19,6 +26,12 @@ def convert_dataset(args):
     
     save_img = args.save_img
     save_depth = args.save_depth
+    use_voxel = bool(args.voxel_sampling)
+    voxel_size = args.voxel_size
+    use_color_weight = bool(args.color_weight_sampling)
+    color_temperature = args.color_temperature
+    color_target = _parse_color_arg(args.color_target)
+    num_points = args.num_points
     
     # create dir to save demonstrations
     if os.path.exists(save_dir):
@@ -79,12 +92,19 @@ def convert_dataset(args):
             new_cloud_array = []
             for i in range(length):
                 old_cloud = cloud_array[i]
-                if old_cloud.shape[0] > 10000:
-                    # Randomly sample points
-                    selected_idx = np.random.choice(old_cloud.shape[0], 10000, replace=True)
-                    new_cloud = old_cloud[selected_idx]
+                if use_voxel:
+                    old_cloud = grid_sample_pcd(old_cloud, grid_size=voxel_size)
+                    print("num points after voxel downsample:", old_cloud.shape[0])
+
+                if use_color_weight:
+                    new_cloud = color_weighted_downsample(
+                        old_cloud,
+                        num_points=num_points,
+                        target_color=color_target,
+                        temperature=color_temperature,
+                    )
                 else:
-                    new_cloud = old_cloud
+                    new_cloud = random_uniform_downsample(old_cloud, num_points)
                 
                 new_cloud_array.append(new_cloud)
             
@@ -175,6 +195,12 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", type=str)
     parser.add_argument("--save_img", type=int)
     parser.add_argument("--save_depth", type=int)
+    parser.add_argument("--voxel_sampling", type=int, default=0, help="Enable voxel grid sampling before saving.")
+    parser.add_argument("--voxel_size", type=float, default=0.005, help="Voxel size for grid sampling.")
+    parser.add_argument("--color_weight_sampling", type=int, default=0, help="Enable color weighted sampling.")
+    parser.add_argument("--color_target", type=str, default="255,255,0", help="Target RGB color for weighted sampling, e.g. '255,255,0'.")
+    parser.add_argument("--color_temperature", type=float, default=50.0, help="Sigma for Gaussian color weighting.")
+    parser.add_argument("--num_points", type=int, default=10000, help="Number of points to keep per cloud.")
     
     
     args = parser.parse_args()

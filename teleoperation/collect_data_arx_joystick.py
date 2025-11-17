@@ -15,16 +15,21 @@ import h5py
 # Camera pipeline (reuse original logic)
 from multi_realsense import MultiRealSense
 
-# Ensure arx_control package is importable from repo root, and import arx5_interface globally
-this_dir = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.abspath(os.path.join(this_dir, os.pardir))
-if _repo_root not in sys.path:
-    sys.path.append(_repo_root)
-_arx_dir = os.path.join(_repo_root, "arx_control")
-if _arx_dir not in sys.path:
-    sys.path.append(_arx_dir)
+from pathlib import Path
+
+# Ensure repo root plus ARX SDK python paths are importable
+_file_path = Path(__file__).resolve()
+_repo_root = _file_path.parents[1]
+_arx_sdk_python = _repo_root / "arx5-sdk" / "python"
+_extra_paths = (_repo_root, _arx_sdk_python, _arx_sdk_python / "peripherals")
+for candidate in _extra_paths:
+    candidate_str = str(candidate)
+    if candidate_str not in sys.path:
+        sys.path.append(candidate_str)
+
 import arx5_interface as arx
-from arx_control.joystick import JoystickRobotics, XboxButton
+from joystick import JoystickRobotics, XboxButton
+
 
 class ArxDataCollector:
     """
@@ -65,11 +70,14 @@ class ArxDataCollector:
         self.action_array = []
 
         # Camera
-        self.camera_context = MultiRealSense(
-            use_front_cam=True,
+        self.camera = MultiRealSense(
             use_right_cam=False,
-            front_num_points=10000,
-            front_z_far=1.0, front_z_near=0.2,
+            front_num_points=20000,
+            use_grid_sampling=False,
+            use_color_weighted_downsample=False,
+            img_size=1024,
+            front_z_far=1.0,
+            front_z_near=0.2,
         )
 
         # Init ARX controller
@@ -83,14 +91,14 @@ class ArxDataCollector:
         eef_cmd.gripper_pos = self.robot_config.gripper_width
         eef_cmd.timestamp = self.controller.get_timestamp() + 1.0
         self.controller.set_eef_cmd(eef_cmd)
-        
+
         # Init Joystick
         self.joystick = JoystickRobotics(
-        home_position=self.controller.get_home_pose().tolist()[:3],
-        home_gripper=self.robot_config.gripper_width,
-        ee_limit=[[0.0, -0.5, -0.5, -1.8, -1.6, -1.6], [0.7, 0.5, 0.5, 1.8, 1.6, 1.6]],
-        gripper_limit=[0.0, self.robot_config.gripper_width],
-    )
+            home_position=self.controller.get_home_pose().tolist()[:3],
+            home_gripper=self.robot_config.gripper_width,
+            ee_limit=[[0.0, -0.5, -0.5, -1.8, -1.6, -1.6], [0.7, 0.5, 0.5, 1.8, 1.6, 1.6]],
+            gripper_limit=[0.0, self.robot_config.gripper_width],
+        )
 
     async def write_data(self, color: Optional[np.ndarray], depth: Optional[np.ndarray], point_cloud: Optional[np.ndarray]):
         async with self.lock:
@@ -104,7 +112,7 @@ class ArxDataCollector:
     async def run(self):
         cprint("ARX DataCollector starting...", "cyan")
         os.makedirs(self.demo_dir, exist_ok=True)
-     
+
         # Warmup
         time.sleep(1.0)
         cprint("Waiting for X to start recording...", "cyan")
@@ -119,7 +127,7 @@ class ArxDataCollector:
         for i in range(self.length):
             start = time.time()
 
-            cam_dict = self.camera_context()
+            cam_dict = self.camera()
             joy_pose, gripper_pose, control_button = self.joystick.get_control()
 
             # Resize and buffer camera data
@@ -160,9 +168,9 @@ class ArxDataCollector:
             text = f"time (ms): {duration * 1000.0: >#8.3f} | step: {i} / {self.length} | fps: {fps:.3f}"
             print(text, end="\r")
             await asyncio.sleep(1 / self.fps)
-    
+
         # Cleanup and save
-        self.camera_context.finalize()
+        self.camera.finalize()
         eef_cmd = self.controller.get_eef_state()
         eef_cmd.gripper_pos = self.robot_config.gripper_width
         eef_cmd.timestamp = self.controller.get_timestamp() + 0.5
@@ -184,7 +192,7 @@ class ArxDataCollector:
             cloud_array = np.array(self.cloud_array)[:seq_length]
             env_qpos_array = np.array(self.env_qpos_array)[:seq_length]
             action_array = np.array(self.action_array)
-                
+
             f.create_dataset("color", data=color_array[:-discard_end_length])
             f.create_dataset("depth", data=depth_array[:-discard_end_length])
             f.create_dataset("cloud", data=cloud_array[:-discard_end_length])
@@ -199,7 +207,6 @@ class ArxDataCollector:
         cprint(f"save data at step: {seq_length} in {record_file_name}", "yellow")
         cprint(f"Final saved file: {record_file_name}", "green")
         cprint("Program finished.", "green")
-
 
 
 def build_argparser():
@@ -238,6 +245,7 @@ async def main_async(args=None):
 
 def main():
     import argparse
+
     parser = build_argparser()
     args = parser.parse_args()
     asyncio.run(main_async(args))
