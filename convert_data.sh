@@ -5,10 +5,10 @@ save_img=0
 save_depth=0
 
 
-demo_path=/home/zishang/python-ws/Humanoid-Teleoperation/demo_dir/raw_data
-save_path=/home/zishang/python-ws/Humanoid-Teleoperation/demo_dir/training_data_bottle3rd
+demo_path=/home/zishang/python_workspace/Humanoid-Teleoperation/demo_dir/raw_data
+save_path=/home/zishang/python_workspace/Humanoid-Teleoperation/demo_dir/training_data_bottle3rd
 
-cd humanoid_teleoperation/scripts
+cd teleoperation
 python convert_demos.py --demo_dir ${demo_path} \
                                 --save_dir ${save_path} \
                                 --save_img ${save_img} \
